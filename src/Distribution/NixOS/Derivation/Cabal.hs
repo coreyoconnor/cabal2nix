@@ -100,14 +100,20 @@ parseDerivation buf
   , [name]    <- buf `regsubmatch` "pname *= *\"([^\"]+)\""
   , [vers']   <- buf `regsubmatch` "version *= *\"([^\"]+)\""
   , Just vers <- simpleParse vers'
-  , [sha]     <- buf `regsubmatch` "sha256 *= *\"([^\"]+)\""
+  -- We do not require a single match on sha256 using [sha] because a package might be pulled from a
+  -- darcs repo. 
+  , shas      <- buf `regsubmatch` "sha256 *= *\"([^\"]+)\""
   , plats     <- buf `regsubmatch` "platforms *= *([^;]+);"
   , maint     <- buf `regsubmatch` "maintainers *= *\\[([^\"]+)]"
   , noHaddock <- buf `regsubmatch` "noHaddock *= *(true|false) *;"
               = Just $ MkDerivation
                   { pname          = name
                   , version        = vers
-                  , sha256         = sha
+                  , sha256         = case shas of 
+                                        [sha] -> sha
+                                        -- TODO: This also prevents derivations with multiple
+                                        -- sha256s from being parsed. OK or not?
+                                        _    -> ""
                   , isLibrary      = False
                   , isExecutable   = False
                   , buildDepends   = []

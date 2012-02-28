@@ -10,82 +10,24 @@ import qualified Data.Set as Set
 import Data.Version
 import qualified Distribution.Hackage.DB as DB
 import Distribution.NixOS.Derivation.Cabal
-import Distribution.NixOS.Derivation.Meta
+import Distribution.NixOS.Scan
 import Distribution.Package
-import Distribution.PackageDescription ( GenericPackageDescription() )
 import Distribution.Text
 import System.Console.GetOpt ( OptDescr(..), ArgDescr(..), ArgOrder(..), usageInfo, getOpt )
-import System.Directory
 import System.Environment
 import System.Exit
 import System.FilePath
 import System.IO
 import Text.Regex.Posix
 
-data Pkg = Pkg Derivation FilePath Bool
-  deriving (Show, Eq, Ord)
-
-type PkgSet = Set.Set Pkg
-
-data Configuration = Configuration
-  { _msgDebug  :: String -> IO ()
-  , _msgInfo   :: String -> IO ()
-  , _hackageDb :: DB.Hackage
-  }
-
-defaultConfiguration :: Configuration
-defaultConfiguration = Configuration
-  { _msgDebug  = hPutStrLn stderr
-  , _msgInfo   = hPutStrLn stderr
-  , _hackageDb = DB.empty
-  }
-
 type Hackage4Nix a = RWST Configuration () PkgSet IO a
 
 io :: (MonadIO m) => IO a -> m a
 io = liftIO
 
-readDirectory :: FilePath -> IO [FilePath]
-readDirectory dirpath = do
-  entries <- getDirectoryContents dirpath
-  return [ x | x <- entries, x /= ".", x /= ".." ]
-
-msgDebug, msgInfo :: String -> Hackage4Nix ()
-msgDebug msg = ask >>= \s -> io (_msgDebug s msg)
-msgInfo msg = ask >>= \s -> io (_msgInfo s msg)
-
-getCabalPackage :: String -> Version -> Hackage4Nix GenericPackageDescription
-getCabalPackage name vers = do
-  db <- asks _hackageDb
-  case DB.lookup name db of
-    Just db' -> case DB.lookup vers db' of
-                  Just pkg -> return pkg
-                  Nothing  -> fail ("hackage doesn't know about " ++ name ++ " version " ++ display vers)
-    Nothing  -> fail ("hackage doesn't know about " ++ show name)
-
-discoverNixFiles :: (FilePath -> Hackage4Nix ()) -> FilePath -> Hackage4Nix ()
-discoverNixFiles yield dirOrFile = do
-  isFile <- io (doesFileExist dirOrFile)
-  case (isFile, takeExtension dirOrFile) of
-    (True,".nix") -> yield dirOrFile
-    (True,_)     -> return ()
-    (False,_)    -> io (readDirectory dirOrFile) >>= mapM_ (discoverNixFiles yield . (dirOrFile </>))
-
 regenerateDerivation :: Derivation -> String -> Bool
 regenerateDerivation deriv buf = not (pname deriv `elem` patchedPackages) &&
                                  not (buf =~ "(pre|post)Configure|(pre|post)Install|patchPhase|patches")
-
-parseNixFile :: FilePath -> String -> Hackage4Nix (Maybe Pkg)
-parseNixFile path buf
-  | not (buf =~ "cabal.mkDerivation")
-               = msgDebug ("ignore non-cabal package " ++ path) >> return Nothing
-  | any (`isSuffixOf`path) badPackagePaths
-               = msgDebug ("ignore known bad package " ++ path) >> return Nothing
-  | buf =~ "src = (fetchurl|fetchgit|sourceFromHead)"
-               = msgDebug ("ignore non-hackage package " ++ path) >> return Nothing
-  | Just deriv <- parseDerivation buf
-               = return (Just (Pkg deriv path (regenerateDerivation deriv buf)))
-  | otherwise = msgInfo ("failed to parse file " ++ path) >> return Nothing
 
 selectLatestVersions :: PkgSet -> PkgSet
 selectLatestVersions = Set.fromList . nubBy f2 . sortBy f1 . Set.toList
@@ -105,10 +47,11 @@ updateNixPkgs :: [FilePath] -> Hackage4Nix ()
 updateNixPkgs paths = do
   msgDebug $ "updating = " ++ show paths
   flip mapM_ paths $ \fileOrDir ->
-    flip discoverNixFiles fileOrDir $ \file -> do
-      nix' <- io (readFile file) >>= parseNixFile file
-      flip (maybe (return ())) nix' $ \nix -> do
-        let Pkg deriv path regenerate = nix
+    flip withNixFiles fileOrDir $ \path -> do
+      let makeUpdatedPkg buf deriv = return $ First $ Just $ Pkg deriv path (regenerateDerivation deriv buf)
+      mnix <- io (readFile path) >>= onHaskellDerivation path makeUpdatedPkg 
+      flip (maybe (return ())) (getFirst mnix) $ \nix -> do
+        let Pkg deriv _ regenerate = nix
             maints = maintainers (metaSection deriv)
             plats  = platforms (metaSection deriv)
         modify (Set.insert nix)
@@ -199,14 +142,3 @@ main = bracket (return ()) (\() -> hFlush stdout >> hFlush stderr) $ \() -> do
   ((),_,()) <- runRWST (updateNixPkgs args) cfg Set.empty
   return ()
 
-
--- Packages that we cannot parse.
-
-badPackagePaths :: [FilePath]
-badPackagePaths = ["haskell-platform/2011.2.0.1.nix","haskell-platform/2011.4.0.0.nix"]
-
--- Packages that we cannot regenerate automatically yet. This list
--- should be empty.
-
-patchedPackages :: [String]
-patchedPackages = []
