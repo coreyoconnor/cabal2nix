@@ -55,6 +55,8 @@ getCabalPackage name vers = do
                   Nothing  -> fail ("hackage doesn't know about " ++ name ++ " version " ++ display vers)
     Nothing  -> fail ("hackage doesn't know about " ++ show name)
 
+-- TODO: The Bool means "should be updated" this state flag should be moved into only the HackageDB
+-- monad.
 data Pkg = Pkg Derivation FilePath Bool
   deriving (Show, Eq, Ord)
 

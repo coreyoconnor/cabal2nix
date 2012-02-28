@@ -9,6 +9,7 @@ import Control.Exception ( bracket )
 import Control.Monad
 import Control.Monad.RWS
 
+import Data.Foldable ( for_ )
 import Data.List
 import Data.Monoid
 import qualified Data.Map as Map
@@ -32,14 +33,26 @@ type AddFromHackage a = RWST Configuration [Pkg] KnownPkgs IO a
 
 addPkgsFromHackage :: FilePath -> String -> AddFromHackage ()
 addPkgsFromHackage nixpkgsDir pkgName = do
-    msgDebug $ "checking if cabal package " ++ pkgName ++ " already exists"
-    return ()
+    msgDebug $ "cabal package " ++ pkgName ++ " ..."
+    alreadyExists <- gets (Map.member pkgName)
+    case alreadyExists of
+        True -> do
+            msgDebug "... exists."
+            return ()
+        False -> do
+            msgDebug "... does not exist."
+            let pkg = Pkg 
+            tell [ pkgName ]
+            return ()
+                   
     
 data Opts = DryRun | Verbose
     deriving ( Show, Eq )
 
 -- No options for AddFromHackage yet.
-optDescriptions = [ Option "n" ["dry-run"] (OptArg ( const DryRun ) "") "Dry run" ]
+optDescriptions = [ Option "n" ["dry-run"] (OptArg ( const DryRun ) "") "Dry run" 
+                  , Option "v" ["verbose"] (OptArg ( const Verbose ) "") "Verbose"
+                  ]
 
 -- given the name of a cabal package and a nix derivation directory:
 --  \name -> if a cabal derivation is not found with the given name then 
@@ -63,14 +76,18 @@ main = bracket (return ()) (\() -> hFlush stdout >> hFlush stderr) $ \() -> do
     -- find all existing packages
     ( (), existingPkgs, () ) <- runRWST (findExistingPkgs nixpkgsDir) cfg Map.empty
 
+    liftIO $ do
+        _msgDebug cfg "existing packages:"
+        for_ existingPkgs $ \(Pkg deriv _ _) -> _msgDebug cfg  $ "    " ++ pname deriv
+
     -- find all packages to add.
     ( (), _, allPkgsToAdd ) <- runRWST (addPkgsFromHackage nixpkgsDir pkgToAdd ) cfg existingPkgs
 
     -- print them out
-    liftIO $ putStrLn "will add packages:"
-    forM_ allPkgsToAdd $ \pkg -> do
-        putStr "    "
-        liftIO $ print pkg
+    liftIO $ do
+        _msgInfo cfg $ "will add packages:"
+        for_ allPkgsToAdd $ \(Pkg deriv out_path _) -> do
+            _msgInfo cfg $ "    " ++ pname deriv ++ " => " ++ out_path
 
     -- add them if not a dry run
     case DryRun `elem` opts of
