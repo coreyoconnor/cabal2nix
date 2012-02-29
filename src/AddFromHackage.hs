@@ -1,5 +1,9 @@
 module Main ( main ) where
 
+import Cabal2Nix.Hackage ( hashPackage )
+import Cabal2Nix.Generate ( cabal2nix )
+import Cabal2Nix.Normalize ( normalize )
+
 import qualified Distribution.Hackage.DB as DB
 import Distribution.NixOS.Derivation.Cabal
 import Distribution.NixOS.Scan
@@ -13,6 +17,11 @@ import Data.Foldable ( for_ )
 import Data.List
 import Data.Monoid
 import qualified Data.Map as Map
+
+import Distribution.PackageDescription ( package
+                                       , packageDescription 
+                                       , GenericPackageDescription(..) 
+                                       )
 
 import System.Console.GetOpt 
 import System.Environment
@@ -41,10 +50,28 @@ addPkgsFromHackage nixpkgsDir pkgName = do
             return ()
         False -> do
             msgDebug "... does not exist."
-            let pkg = Pkg 
-            tell [ pkgName ]
-            return ()
-                   
+            -- determine the latest version...
+            db <- asks _hackageDb
+            -- ...find the package in Hackage
+            case Map.lookup pkgName db of 
+                Nothing -> error $ "cannot find " ++ pkgName ++ " in hackage"
+                Just pkgInfo -> do
+                    -- the max element will be the latest version.
+                    let ( maxVersion, cabal ) = Map.findMax pkgInfo
+                    msgDebug $ "assuming version " ++ show maxVersion ++ " is the version to use."
+                    let pkgDesc = packageDescription cabal
+                        packageId = package pkgDesc
+                    sha <- liftIO $ hashPackage packageId 
+                    let deriv  = (cabal2nix cabal) { sha256 = sha }
+                        deriv' = normalize deriv
+                    let pkg = Pkg deriv' nixpkgsDir undefined
+                    tell [ pkg ]
+                    -- TODO: The package description does not have the dependencies filled out.
+                    -- Need to collect the deps from the cabal library target
+                    let depPkgNames = [ n | DB.Dependency pkgName _ <- DB.buildDepends pkgDesc
+                                          , let DB.PackageName n    = pkgName 
+                                      ]
+                    for_ depPkgNames $ addPkgsFromHackage nixpkgsDir
     
 data Opts = DryRun | Verbose
     deriving ( Show, Eq )

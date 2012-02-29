@@ -88,7 +88,7 @@ Executable addFromHackage
   hs-source-dirs:       src
   Build-Depends:        base >= 3 && < 5, regex-posix, pretty, Cabal >= 1.8,
                         mtl, containers, directory, filepath, hackage-db,
-                        transformers
+                        transformers, process, HTTP
   Extensions:           PatternGuards, RecordWildCards, CPP
   Ghc-Options:          -Wall
   other-modules:        Cabal2Nix.CorePackages
