@@ -1,7 +1,8 @@
 module Main ( main ) where
 
+import Cabal2Nix.CorePackages ( corePackages )
 import Cabal2Nix.Hackage ( hashPackage )
-import Cabal2Nix.Generate ( cabal2nix )
+import Cabal2Nix.Generate ( finalizedDeps, cabal2nix, unDep )
 import Cabal2Nix.Normalize ( normalize )
 
 import qualified Distribution.Hackage.DB as DB
@@ -15,7 +16,6 @@ import Control.Monad.RWS
 
 import Data.Foldable ( for_ )
 import Data.List
-import Data.Monoid
 import qualified Data.Map as Map
 
 import Distribution.PackageDescription ( package
@@ -25,6 +25,7 @@ import Distribution.PackageDescription ( package
 
 import System.Console.GetOpt 
 import System.Environment
+import System.FilePath
 import System.IO
 
 type KnownPkgs = Map.Map String Pkg
@@ -43,7 +44,9 @@ type AddFromHackage a = RWST Configuration [Pkg] KnownPkgs IO a
 addPkgsFromHackage :: FilePath -> String -> AddFromHackage ()
 addPkgsFromHackage nixpkgsDir pkgName = do
     msgDebug $ "cabal package " ++ pkgName ++ " ..."
-    alreadyExists <- gets (Map.member pkgName)
+    isKnown <- gets (Map.member pkgName)
+    let isCore = elem pkgName corePackages
+        alreadyExists = isKnown || isCore
     case alreadyExists of
         True -> do
             msgDebug "... exists."
@@ -64,19 +67,20 @@ addPkgsFromHackage nixpkgsDir pkgName = do
                     sha <- liftIO $ hashPackage packageId 
                     let deriv  = (cabal2nix cabal) { sha256 = sha }
                         deriv' = normalize deriv
-                    let pkg = Pkg deriv' nixpkgsDir undefined
+                    let pkg = Pkg deriv' ( nixpkgsDir </> pkgName ) undefined
                     tell [ pkg ]
-                    -- TODO: The package description does not have the dependencies filled out.
-                    -- Need to collect the deps from the cabal library target
-                    let depPkgNames = [ n | DB.Dependency pkgName _ <- DB.buildDepends pkgDesc
-                                          , let DB.PackageName n    = pkgName 
-                                      ]
+                    -- add to known packages to prevent a package from being added to the to add
+                    -- list multiple times.
+                    modify (Map.insert pkgName pkg)
+                    -- recurse with all packages this package depended on.
+                    let depPkgNames = map unDep $ finalizedDeps cabal
                     for_ depPkgNames $ addPkgsFromHackage nixpkgsDir
     
 data Opts = DryRun | Verbose
     deriving ( Show, Eq )
 
 -- No options for AddFromHackage yet.
+optDescriptions :: [OptDescr Opts]
 optDescriptions = [ Option "n" ["dry-run"] (OptArg ( const DryRun ) "") "Dry run" 
                   , Option "v" ["verbose"] (OptArg ( const Verbose ) "") "Verbose"
                   ]
@@ -88,6 +92,7 @@ optDescriptions = [ Option "n" ["dry-run"] (OptArg ( const DryRun ) "") "Dry run
 --          recurse with name and max dependent version of build depend
 --
 -- XXX: You still need to add the packages to haskell_packages.nix afterwards.
+main :: IO ()
 main = bracket (return ()) (\() -> hFlush stdout >> hFlush stderr) $ \() -> do
     -- parse the command line args
     ( opts, nixpkgsDir : pkgToAdd : _, optErrors ) <- getOpt RequireOrder optDescriptions <$> getArgs

@@ -1,4 +1,7 @@
-module Cabal2Nix.Generate ( cabal2nix ) where
+module Cabal2Nix.Generate ( cabal2nix 
+                          , finalizedDeps
+                          , unDep
+                          ) where
 
 import Cabal2Nix.License
 import Cabal2Nix.PostProcess
@@ -12,6 +15,19 @@ import Distribution.PackageDescription.Configuration
 import Distribution.System
 import Distribution.Version
 import Distribution.NixOS.Derivation.Cabal
+
+finalizedDeps :: Cabal.GenericPackageDescription -> [Cabal.Dependency]
+finalizedDeps cabal =
+    Cabal.buildDepends tpkg
+    where
+        descr   = Cabal.packageDescription cabal
+        pkg     = Cabal.package descr
+        Right (tpkg, _) = finalizePackageDescription
+                            (configureCabalFlags pkg)
+                            (const True)
+                            (Platform I386 Linux)                   -- shouldn't be hardcoded
+                            (CompilerId GHC (Version [7,2,2] []))   -- dito
+                            [] cabal
 
 cabal2nix :: Cabal.GenericPackageDescription -> Derivation
 cabal2nix cabal = normalize $ postProcess $ MkDerivation
